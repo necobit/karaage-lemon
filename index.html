@@ -450,19 +450,23 @@ function showGameover() {
   state = "gameover";
   // scores は物理プレイヤー(1P/2P)固定でカウントしているので、そのまま比較・表示できる
   const winnerIdx = scores[0] >= CONFIG.WIN_SCORE ? 0 : 1;
-  const winnerName = `${playerLabel(winnerIdx)} の勝ち！ 🎉`;
   const scoreLine = `1P ${scores[0]} - 2P ${scores[1]}`;
-  document.getElementById("winner-bottom").textContent = winnerName;
-  document.getElementById("score-bottom").textContent = scoreLine;
+  // 画面が上端(1P)/下端(2P)で分かれているので、共通の「〇Pの勝ち」ではなく
+  // それぞれの物理プレイヤー視点で「あなたの勝ち/負け」を出し分ける
+  const resultText = (physicalIdx) => physicalIdx === winnerIdx ? "あなたの勝ち！ 🎉" : "あなたの負け…";
   const topWrap = document.getElementById("go-top");
   if (mode === "pvp") {
-    // 上端側プレイヤー向けにも同じ内容を表示（CSSの.rot180で180度回転済み配置なので
-    // テキスト自体は同一でよい＝1P/2Pラベルでどちらの物理プレイヤーの得点か一意に分かる）
+    // pvp: scores[0]=1P(上端), scores[1]=2P(下端) 固定なのでそのまま出し分け
     topWrap.style.display = "";
-    document.getElementById("winner-top").textContent = winnerName;
+    document.getElementById("winner-top").textContent = resultText(0); // 1P
     document.getElementById("score-top").textContent = scoreLine;
+    document.getElementById("winner-bottom").textContent = resultText(1); // 2P
+    document.getElementById("score-bottom").textContent = scoreLine;
   } else {
-    // ソロ(CPU対戦)モードは物理プレイヤーが1人だけなので上端側の複製表示は不要
+    // ソロ(CPU対戦)モード: HUMAN_IDXは役割が入れ替わっても物理プレイヤーIDと一致する
+    document.getElementById("winner-bottom").textContent = resultText(HUMAN_IDX);
+    document.getElementById("score-bottom").textContent = scoreLine;
+    // 物理プレイヤーが1人だけなので上端側の複製表示は不要
     topWrap.style.display = "none";
   }
   attackerIdx = 0;

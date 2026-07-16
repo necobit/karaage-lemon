@@ -17,6 +17,8 @@
   }
   #game-wrap {
     position: fixed; inset: 0;
+    /* サイドチェンジ時に盤面全体を180度回転させる本体。
+       時間はJS側 CONFIG.SIDECHANGE_MS より短くすること（回転完了後に次ラウンド開始のため） */
     transition: transform 0.8s cubic-bezier(0.4, 0.0, 0.2, 1);
   }
   #game-wrap.flipped { transform: rotate(180deg); }
@@ -130,7 +132,9 @@ const CONFIG = {
   // --- 演出 ---
   INTRO_MS: 1800,              // ラウンド開始前の表示時間
   RESOLVE_MS: 1600,            // 得点表示の時間
-  SIDECHANGE_MS: 1000,         // サイドチェンジ演出の時間
+  SIDECHANGE_MS: 1000,         // サイドチェンジ演出（画面全体の180度回転）の時間。
+                                // CSS側の #game-wrap の transition 時間（0.8s、下記<style>参照）
+                                // より必ず長くすること（回転が終わってから次ラウンドを開始するため）
 };
 
 /* ============================================================ */
@@ -158,12 +162,15 @@ window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", () => setTimeout(resize, 300));
 
 /* ---------------- ゲーム状態 ---------------- */
-// プレイヤー0 = 最初の攻撃側（2人対戦では画面上端側の人）/ CPU戦では人間
-// プレイヤー1 = 最初の防御側 / CPU戦ではCPU
+// attackerIdx: 「いま攻撃している役割」を 0/1 で表す内部トグル（ラウンドごとに反転する）
+// scores: 物理プレイヤー固定のスコア。scores[0]=1P（画面上端側に固定の物理プレイヤー）、
+//         scores[1]=2P（画面下端側に固定の物理プレイヤー）。攻守が入れ替わっても
+//         「今どちらの物理プレイヤーが得点したか」で加算するため、役割が入れ替わっても
+//         1P/2Pの対応はズレない（attackerPhysicalId/defenderPhysicalId 参照）。
 let state = "menu";       // menu | intro | playing | resolve | sidechange | gameover
 let mode = "pvp";          // pvp | human-attack | human-defense
-let scores = [0, 0];
-let attackerIdx = 0;       // いま攻撃しているプレイヤー
+let scores = [0, 0];       // [1Pの得点, 2Pの得点]
+let attackerIdx = 0;       // いま攻撃している役割（0/1、物理プレイヤーIDとは別概念）
 let roundNum = 1;
 let stateUntil = 0;        // intro/resolve/sidechange の終了時刻
 let resolveMsg = "";
@@ -186,6 +193,14 @@ const HUMAN_IDX = 0;
 function isFlipped() { return mode === "pvp" && attackerIdx === 1; }
 function cpuIsAttacker() { return mode !== "pvp" && attackerIdx !== HUMAN_IDX; }
 function cpuIsDefender() { return mode !== "pvp" && attackerIdx === HUMAN_IDX; }
+
+// 「いま攻撃している側」が物理的にどちらのプレイヤー（0=1P/画面上端側, 1=2P/画面下端側）かを返す。
+// pvp では画面全体の反転(isFlipped)と連動して物理プレイヤーが入れ替わる。
+// CPU戦では画面反転が起きないため、常に攻撃ゾーン＝画面上端＝1P側の物理位置になる
+// （その位置を人間が操作するかCPUが操作するかは attackerIdx が別途決めている）。
+function attackerPhysicalId() { return isFlipped() ? 1 : 0; }
+function defenderPhysicalId() { return 1 - attackerPhysicalId(); }
+function playerLabel(id) { return id === 0 ? "1P" : "2P"; }
 
 function layoutRound() {
   const rowH = H * CONFIG.KARAAGE_ROW_RATIO;
@@ -369,11 +384,13 @@ function startRound() {
   stateUntil = performance.now() + CONFIG.INTRO_MS;
 }
 
-function scorePoint(winnerIdx, msg) {
+function scorePoint(winnerIdx, baseMsg) {
   scores[winnerIdx]++;
   sndPoint();
   resolveIsGameover = scores[winnerIdx] >= CONFIG.WIN_SCORE;
-  resolveMsg = msg;
+  // ゲーム続行時はここで「この後サイドチェンジが起きる」ことを予告してから
+  // sidechange ステートで実際に画面を回転させる（回転自体は何も表示で隠さない）
+  resolveMsg = resolveIsGameover ? `${baseMsg}\n🏆 ゲーム終了！` : `${baseMsg}\nサイドチェンジ！`;
   state = "resolve";
   stateUntil = performance.now() + CONFIG.RESOLVE_MS;
 }
@@ -393,22 +410,21 @@ function afterResolve() {
 
 function showGameover() {
   state = "gameover";
+  // scores は物理プレイヤー(1P/2P)固定でカウントしているので、そのまま比較・表示できる
   const winnerIdx = scores[0] >= CONFIG.WIN_SCORE ? 0 : 1;
-  let winnerName;
-  if (mode === "pvp") {
-    winnerName = winnerIdx === 0 ? "プレイヤー1（先攻）の勝ち！" : "プレイヤー2（後攻）の勝ち！";
-  } else {
-    winnerName = winnerIdx === HUMAN_IDX ? "あなたの勝ち！ 🎉" : "CPUの勝ち…！ 😢";
-  }
-  const scoreLine = `${scores[0]} - ${scores[1]}`;
+  const winnerName = `${playerLabel(winnerIdx)} の勝ち！ 🎉`;
+  const scoreLine = `1P ${scores[0]} - 2P ${scores[1]}`;
   document.getElementById("winner-bottom").textContent = winnerName;
   document.getElementById("score-bottom").textContent = scoreLine;
   const topWrap = document.getElementById("go-top");
   if (mode === "pvp") {
+    // 上端側プレイヤー向けにも同じ内容を表示（CSSの.rot180で180度回転済み配置なので
+    // テキスト自体は同一でよい＝1P/2Pラベルでどちらの物理プレイヤーの得点か一意に分かる）
     topWrap.style.display = "";
     document.getElementById("winner-top").textContent = winnerName;
-    document.getElementById("score-top").textContent = `${scores[1]} - ${scores[0]}`;
+    document.getElementById("score-top").textContent = scoreLine;
   } else {
+    // ソロ(CPU対戦)モードは物理プレイヤーが1人だけなので上端側の複製表示は不要
     topWrap.style.display = "none";
   }
   attackerIdx = 0;
@@ -550,11 +566,13 @@ function update(now, dt) {
 
   if (landed) {
     sndHit();
-    scorePoint(attackerIdx, "🍋 レモン命中！\n攻撃側に1点");
+    const aId = attackerPhysicalId();
+    scorePoint(aId, `🍋 レモン命中！\n${playerLabel(aId)}に1点`);
     return;
   }
   if (timeUp && drops.length === 0) {
-    scorePoint(1 - attackerIdx, "🛡 守り切った！\n防御側に1点");
+    const dId = defenderPhysicalId();
+    scorePoint(dId, `🛡 守り切った！\n${playerLabel(dId)}に1点`);
   }
 }
 
@@ -707,13 +725,13 @@ function drawKaraage() {
 
 function drawHud(now) {
   const rot = attackTextRotated();
-  const atkLabel = "🍋 こうげき";
-  const defLabel = "🍗 ぼうぎょ";
+  const topId = attackerPhysicalId();   // 画面上端の攻撃ゾーンに今いる物理プレイヤー
+  const bottomId = 1 - topId;           // 画面下端の防御ゾーンに今いる物理プレイヤー
 
-  // 攻撃側（画面上端、pvpならそのプレイヤー向きに180度回転）
-  drawText(`${atkLabel}  ${scores[attackerIdx]}てん`, W / 2, 34, 20, "#7a5a00", rot);
-  // 防御側（画面下端側、防御プレイヤー向き＝正位置）
-  drawText(`${defLabel}  ${scores[1 - attackerIdx]}てん`, W / 2, H * 0.5 + 34, 20, "#fff3d6", false);
+  // 攻撃ゾーン（画面上端、pvpならそのプレイヤー向きに180度回転）: ラベルは常に固定の1P/2P
+  drawText(`${playerLabel(topId)} 🍋 ${scores[topId]}てん`, W / 2, 34, 20, "#7a5a00", rot);
+  // 防御ゾーン（画面下端側、防御プレイヤー向き＝正位置）: ラベルは常に固定の1P/2P
+  drawText(`${playerLabel(bottomId)} 🍗 ${scores[bottomId]}てん`, W / 2, H * 0.5 + 34, 20, "#fff3d6", false);
 
   if (state === "playing" || state === "intro") {
     // 残り時間（中央線の上下に両向きで表示）
@@ -771,9 +789,9 @@ function drawBanner() {
       msg = "スタート！";
     }
   } else if (state === "resolve") {
+    // resolveMsg には scorePoint() 内で「サイドチェンジ！」または「🏆 ゲーム終了！」の
+    // 予告が既に追記されている（sidechangeステート自体はバナーなしで純粋に回転を見せる）
     msg = resolveMsg;
-  } else if (state === "sidechange") {
-    msg = "サイドチェンジ！\n攻守交代";
   }
   // 下側プレイヤー向き
   drawMultiline(msg, W / 2, H * 0.68, 26, "#ffe75c", false);
@@ -791,7 +809,6 @@ function draw(now) {
   drawBackground();
   drawKaraage();
   drawPaddle();
-  for (const d of drops) drawDrop(d);
   for (const p of particles) {
     ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 2));
     ctx.fillStyle = p.color;
@@ -800,8 +817,16 @@ function draw(now) {
     ctx.fill();
     ctx.globalAlpha = 1;
   }
+  if (state === "sidechange") {
+    // サイドチェンジ中はバナーやHUDで盤面を隠さない。CSSで#game-wrap全体が
+    // 実際に180度回転している最中なので、その回転そのものがユーザーに見えるようにする
+    // （回転が終わるまでこのステートに留まり、その間は入力も受け付けない＝下のtouch/mouse
+    // ハンドラは state!=="playing" を弾いているので操作不能）
+    return;
+  }
+  for (const d of drops) drawDrop(d);
   drawHud(now);
-  if (state === "intro" || state === "resolve" || state === "sidechange") drawBanner();
+  if (state === "intro" || state === "resolve") drawBanner();
 }
 
 /* ---------------- メインループ ---------------- */

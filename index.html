@@ -113,11 +113,22 @@ const CONFIG = {
   DROP_SPAWN_MAX_Y: 0.46,      // 水滴を出せる最下部（画面高さ比、0.5=中央線）
   MAX_DROPS: 14,               // 同時に存在できる水滴の最大数
 
+  // --- 水滴の落下軌道（straight/wavy/curveをランダムに割り当て。出現確率の合計は1.0にすること） ---
+  DROP_STRAIGHT_PROB: 0.4,     // 直線落下になる確率（残りはwavy/curveに按分）
+  DROP_WAVY_PROB: 0.3,         // サイン波で左右に揺れながら落ちる確率（残り[1-straight-wavy]はcurve）
+  DROP_WAVE_AMPLITUDE: 0.09,   // wavy軌道の振幅（画面幅に対する比率）大きいほど左右に大きく揺れる
+  DROP_WAVE_FREQUENCY: 1.8,    // wavy軌道の周期（1秒あたりの振動回数）大きいほど速く揺れる
+  DROP_CURVE_STRENGTH: 0.16,   // curve軌道の横ドリフト速度（画面幅比/秒）大きいほど大きく曲がる
+
   // --- 防御側（お皿とからあげ） ---
   PADDLE_WIDTH_RATIO: 0.26,    // お皿の幅（画面の幅に対する比率）大きいほど防御有利
   PADDLE_HEIGHT: 20,           // お皿の当たり判定の厚み（px）
   PADDLE_GAP: 46,              // からあげ列とお皿の間隔（px）
-  PADDLE_FOLLOW: 22,           // お皿が指に追従する速さ（大きいほど機敏）
+  // お皿が指の位置(targetX)に追従する速さ（lerp係数。値 × dt を毎フレーム適用）。
+  // 大きいほど機敏＝防御有利。wavy/curve軌道（左右に振られる水滴）に「ギリギリ間に合う」
+  // 手応えを狙って22→34に引き上げ。上げすぎると防御が簡単になりすぎるので注意
+  // （下げるなら26〜、上げるなら38程度までを目安に調整）
+  PADDLE_FOLLOW: 34,
   KARAAGE_COUNT: 6,            // からあげの数（見た目用）
   KARAAGE_ROW_RATIO: 0.085,    // からあげ列の高さ（画面高さ比）
 
@@ -188,16 +199,18 @@ let cpuNextFire = 0, cpuAimX = 0, cpuLastThink = 0;
 let defenseTouchId = null;
 let mouseDown = false;
 
-const HUMAN_IDX = 0;
+// 人間が担当する役割スロット（0/1）。solo系モード(human-attack/human-defense)でのみ意味を持ち、
+// cpuIsAttacker/cpuIsDefenderの判定に使う。startGame()でモードに応じて設定する（constではなくlet）。
+let HUMAN_IDX = 0;
 
-function isFlipped() { return mode === "pvp" && attackerIdx === 1; }
+// 画面全体が180度回転しているか。モードを問わず「いま攻撃している役割(attackerIdx)が1か」だけで
+// 判定する＝pvpでもCPU対戦(1人プレイ)でもサイドチェンジのたびに画面全体が回転する。
+function isFlipped() { return attackerIdx === 1; }
 function cpuIsAttacker() { return mode !== "pvp" && attackerIdx !== HUMAN_IDX; }
 function cpuIsDefender() { return mode !== "pvp" && attackerIdx === HUMAN_IDX; }
 
 // 「いま攻撃している側」が物理的にどちらのプレイヤー（0=1P/画面上端側, 1=2P/画面下端側）かを返す。
-// pvp では画面全体の反転(isFlipped)と連動して物理プレイヤーが入れ替わる。
-// CPU戦では画面反転が起きないため、常に攻撃ゾーン＝画面上端＝1P側の物理位置になる
-// （その位置を人間が操作するかCPUが操作するかは attackerIdx が別途決めている）。
+// isFlipped()と連動して物理プレイヤーが入れ替わる（pvp/CPU対戦とも共通のロジック）。
 function attackerPhysicalId() { return isFlipped() ? 1 : 0; }
 function defenderPhysicalId() { return 1 - attackerPhysicalId(); }
 function playerLabel(id) { return id === 0 ? "1P" : "2P"; }
@@ -295,6 +308,25 @@ function handleEnd(touchId) {
   if (touchId === defenseTouchId) defenseTouchId = null;
 }
 
+// 水滴を1つ生成する。type(straight/wavy/curve)をCONFIGの確率に従ってランダムに割り当てる。
+// baseX/age/curveDirは update() 内でx座標を軌道タイプに応じて動かすために使う付随情報。
+function spawnDrop(x, y) {
+  const r = Math.random();
+  let type = "straight";
+  if (r >= CONFIG.DROP_STRAIGHT_PROB && r < CONFIG.DROP_STRAIGHT_PROB + CONFIG.DROP_WAVY_PROB) {
+    type = "wavy";
+  } else if (r >= CONFIG.DROP_STRAIGHT_PROB + CONFIG.DROP_WAVY_PROB) {
+    type = "curve";
+  }
+  drops.push({
+    x, y,
+    type,
+    baseX: x,                              // wavyはこの位置を中心に左右へ揺れる
+    age: 0,                                 // 生成からの経過秒数（wavyの位相計算に使用）
+    curveDir: Math.random() < 0.5 ? -1 : 1, // curveの曲がる方向（-1=左, 1=右）
+  });
+}
+
 function tryFire(gx, gy) {
   const now = performance.now();
   if (timeUp) return;
@@ -302,8 +334,9 @@ function tryFire(gx, gy) {
   if (drops.length >= CONFIG.MAX_DROPS) return;
   lastFireTime = now;
   const y = Math.max(H * CONFIG.DROP_SPAWN_MIN_Y, Math.min(H * CONFIG.DROP_SPAWN_MAX_Y, gy));
-  drops.push({ x: Math.max(10, Math.min(W - 10, gx)), y });
-  spawnParticles(gx, y, "#fff26b", 6, 2);
+  const x = Math.max(10, Math.min(W - 10, gx));
+  spawnDrop(x, y);
+  spawnParticles(x, y, "#fff26b", 6, 2);
   sndFire();
 }
 
@@ -353,8 +386,13 @@ function startGame(selectedMode) {
   mode = selectedMode;
   scores = [0, 0];
   roundNum = 1;
-  attackerIdx = (mode === "human-defense") ? 1 : 0;
-  applyFlip(false); // メニューからは常に非反転で開始（pvpはプレイヤー0が攻撃から）
+  // attackerIdxは常に0から開始する（=常に非反転の自然な向きでラウンド1を始めるため。
+  // isFlipped()がmodeを問わずattackerIdx===1で判定するようになったので、ここで1から
+  // 始めてしまうとhuman-defenseモードが開始直後から画面反転した状態になってしまう）。
+  // 「人間がどちらの役割からスタートするか」はHUMAN_IDX側で表現する。
+  attackerIdx = 0;
+  HUMAN_IDX = (mode === "human-defense") ? 1 : 0;
+  applyFlip(false); // メニューからは常に非反転で開始
   menuOverlay.classList.add("hidden");
   gameoverOverlay.classList.add("hidden");
   startRound();
@@ -468,7 +506,7 @@ function updateCPU(now, dt) {
       const aggressive = Math.random() < CONFIG.CPU_ATTACK_LOW_PROB;
       const y = aggressive ? H * CONFIG.DROP_SPAWN_MAX_Y : rand(H * 0.15, H * 0.4);
       if (drops.length < CONFIG.MAX_DROPS) {
-        drops.push({ x, y });
+        spawnDrop(x, y);
         spawnParticles(x, y, "#fff26b", 6, 2);
         sndFire();
       }
@@ -477,14 +515,23 @@ function updateCPU(now, dt) {
   }
   if (cpuIsDefender()) {
     // 防御CPU: 一番下（karaage に近い）の水滴を追う
-    if (now - cpuLastThink > CONFIG.CPU_REACTION_MS) {
+    let target = null;
+    for (const d of drops) {
+      if (!target || d.y > target.y) target = d;
+    }
+    // straight（直線）はCPU_REACTION_MSごとに狙いを更新し、人間らしい反応の遅れを残す。
+    // wavy/curve（左右に曲がる軌道）は反応間隔のままだと不自然に追従が遅れて見えるため、
+    // その水滴を狙っている間は毎フレーム追従先のx座標を更新する（＝反応間隔を無視）
+    const trackingCurvedDrop = target && target.type !== "straight";
+    if (trackingCurvedDrop || now - cpuLastThink > CONFIG.CPU_REACTION_MS) {
       cpuLastThink = now;
-      let target = null;
-      for (const d of drops) {
-        if (!target || d.y > target.y) target = d;
-      }
       if (target) {
-        cpuAimX = target.x + rand(-1, 1) * paddle.w * CONFIG.CPU_AIM_ERROR;
+        // 狙いのブレはターゲットごとに1回だけ決めて使い回す（毎フレーム再抽選すると
+        // お皿が細かく震えてしまうため）
+        if (target.cpuAimOffset === undefined) {
+          target.cpuAimOffset = rand(-1, 1) * paddle.w * CONFIG.CPU_AIM_ERROR;
+        }
+        cpuAimX = target.x + target.cpuAimOffset;
       } else {
         cpuAimX = W / 2;
       }
@@ -541,6 +588,16 @@ function update(now, dt) {
   for (const d of drops) {
     const prevY = d.y;
     d.y += vy;
+    d.age += dt;
+    // 軌道タイプに応じて横方向(x)を動かす。straightはx不変（何もしない）
+    if (d.type === "wavy") {
+      d.x = d.baseX + Math.sin(d.age * CONFIG.DROP_WAVE_FREQUENCY * Math.PI * 2) * (W * CONFIG.DROP_WAVE_AMPLITUDE);
+    } else if (d.type === "curve") {
+      d.x += d.curveDir * W * CONFIG.DROP_CURVE_STRENGTH * dt;
+    }
+    // 画面端からはみ出さないようclamp（お皿の命中判定は d.x をそのまま見るだけなので、
+    // 軌道タイプが増えてもロジックの変更は不要。ここでのclampだけで完結する）
+    d.x = Math.max(r, Math.min(W - r, d.x));
     // お皿でブロック
     if (prevY - r < paddleY + CONFIG.PADDLE_HEIGHT && d.y + r >= paddleY &&
         Math.abs(d.x - paddle.x) <= paddle.w / 2 + r * 0.6) {
@@ -585,8 +642,11 @@ function drawRotated(x, y, fn) {
   ctx.restore();
 }
 
-// 攻撃側UIをそのプレイヤー向きに回転して描くか（2人対戦時のみ回転）
-function attackTextRotated() { return mode === "pvp"; }
+// 攻撃ゾーン（canvas上端）のテキストをctx.rotate(180)して描くか。
+// 画面全体がisFlipped()で反転しうるモードでは常にtrue固定でよい
+// （回転後もそのゾーンの現在の占有者から見て文字が正しい向きで読めるようにするための補正で、
+//  攻撃ゾーンの物理的な位置がisFlipped()に応じて動く以上、pvp/CPU対戦を問わず同じ理屈が必要）
+function attackTextRotated() { return true; }
 
 function drawText(text, x, y, size, color, rotated, weight) {
   ctx.save();
@@ -772,7 +832,6 @@ function drawHud(now) {
 function drawBanner() {
   ctx.fillStyle = "rgba(40, 22, 5, 0.55)";
   ctx.fillRect(0, 0, W, H);
-  const rot = attackTextRotated();
   let msg = "";
   if (state === "intro") {
     const remain = stateUntil - performance.now();
@@ -795,8 +854,10 @@ function drawBanner() {
   }
   // 下側プレイヤー向き
   drawMultiline(msg, W / 2, H * 0.68, 26, "#ffe75c", false);
-  // 上側プレイヤー向き（pvp時のみ）
-  if (rot) drawMultiline(msg, W / 2, H * 0.32, 26, "#ffe75c", true);
+  // 上側プレイヤー向き（物理プレイヤーが2人いるpvp時のみ二重に描画。
+  // attackTextRotated()は常にtrueになったため、ここは意図的にmode==='pvp'を直接見る
+  // ＝CPU対戦(1人プレイ)では単一方向の表示のまま変えない）
+  if (mode === "pvp") drawMultiline(msg, W / 2, H * 0.32, 26, "#ffe75c", true);
 }
 
 function draw(now) {

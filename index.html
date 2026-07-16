@@ -67,8 +67,7 @@
   <div class="title">からあげレモン</div>
   <div class="subtitle">🍋 レモン汁からからあげを守れ！ 🍗</div>
   <button class="btn" id="btn-pvp">🔥 2人対戦</button>
-  <button class="btn sub" id="btn-cpu-attack">🍋 CPU対戦（攻撃側を操作）</button>
-  <button class="btn sub" id="btn-cpu-defense">🍗 CPU対戦（防御側を操作）</button>
+  <button class="btn sub" id="btn-cpu-defense">🍗 CPU対戦</button>
   <div class="rules">
     ・攻撃側: 自分側のエリアをタップしてレモン汁を落とす<br>
     ・防御側: お皿をドラッグしてからあげを守る<br>
@@ -179,7 +178,7 @@ window.addEventListener("orientationchange", () => setTimeout(resize, 300));
 //         「今どちらの物理プレイヤーが得点したか」で加算するため、役割が入れ替わっても
 //         1P/2Pの対応はズレない（attackerPhysicalId/defenderPhysicalId 参照）。
 let state = "menu";       // menu | intro | playing | resolve | sidechange | gameover
-let mode = "pvp";          // pvp | human-attack | human-defense
+let mode = "pvp";          // pvp | human-defense（CPU対戦は防御側スタートの1モードのみ）
 let scores = [0, 0];       // [1Pの得点, 2Pの得点]
 let attackerIdx = 0;       // いま攻撃している役割（0/1、物理プレイヤーIDとは別概念）
 let roundNum = 1;
@@ -199,7 +198,7 @@ let cpuNextFire = 0, cpuAimX = 0, cpuLastThink = 0;
 let defenseTouchId = null;
 let mouseDown = false;
 
-// 人間が担当する役割スロット（0/1）。solo系モード(human-attack/human-defense)でのみ意味を持ち、
+// 人間が担当する役割スロット（0/1）。soloモード(human-defense)でのみ意味を持ち、
 // cpuIsAttacker/cpuIsDefenderの判定に使う。startGame()でモードに応じて設定する（constではなくlet）。
 let HUMAN_IDX = 0;
 
@@ -475,7 +474,6 @@ function showGameover() {
 }
 
 document.getElementById("btn-pvp").addEventListener("click", () => startGame("pvp"));
-document.getElementById("btn-cpu-attack").addEventListener("click", () => startGame("human-attack"));
 document.getElementById("btn-cpu-defense").addEventListener("click", () => startGame("human-defense"));
 document.getElementById("btn-retry").addEventListener("click", () => startGame(mode));
 document.getElementById("btn-menu").addEventListener("click", () => {

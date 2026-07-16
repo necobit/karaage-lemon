@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>からあげレモン</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #2a1a0a;
+    touch-action: none;
+    overscroll-behavior: none;
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  }
+  #game-wrap {
+    position: fixed; inset: 0;
+    transition: transform 0.8s cubic-bezier(0.4, 0.0, 0.2, 1);
+  }
+  #game-wrap.flipped { transform: rotate(180deg); }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .overlay {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: rgba(30, 18, 5, 0.92);
+    color: #fff; text-align: center;
+    z-index: 10; padding: 20px;
+  }
+  .hidden { display: none !important; }
+  .title { font-size: 2.4em; font-weight: 900; margin-bottom: 4px; letter-spacing: 0.05em;
+    background: linear-gradient(180deg, #ffe75c, #f5a623);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .subtitle { font-size: 0.95em; color: #d8c9a8; margin-bottom: 28px; }
+  .btn {
+    display: block; width: min(78vw, 320px);
+    margin: 8px auto; padding: 15px 10px;
+    font-size: 1.05em; font-weight: 700;
+    color: #4a2c08; background: linear-gradient(180deg, #ffe75c, #ffc93c);
+    border: none; border-radius: 14px;
+    box-shadow: 0 4px 0 #c78f1e;
+    cursor: pointer;
+  }
+  .btn:active { transform: translateY(3px); box-shadow: 0 1px 0 #c78f1e; }
+  .btn.sub { background: linear-gradient(180deg, #f5e6cc, #ddc9a3); box-shadow: 0 4px 0 #a89468; }
+  .rules {
+    margin-top: 26px; font-size: 0.8em; line-height: 1.7;
+    color: #c9b990; max-width: 320px; text-align: left;
+  }
+  #gameover-overlay .winner-text { font-size: 1.9em; font-weight: 900; margin: 10px 0; color: #ffe75c; }
+  #gameover-overlay .score-text { font-size: 1.2em; color: #e8dcc0; margin-bottom: 8px; }
+  .rot180 { transform: rotate(180deg); }
+  #go-top { position: absolute; top: 6vh; left: 0; right: 0; }
+  #go-bottom { position: absolute; bottom: 6vh; left: 0; right: 0; }
+</style>
+</head>
+<body>
+<div id="game-wrap"><canvas id="game"></canvas></div>
+
+<!-- モード選択 -->
+<div id="menu-overlay" class="overlay">
+  <div class="title">からあげレモン</div>
+  <div class="subtitle">🍋 レモン汁からからあげを守れ！ 🍗</div>
+  <button class="btn" id="btn-pvp">🔥 2人対戦</button>
+  <button class="btn sub" id="btn-cpu-attack">🍋 CPU対戦（攻撃側を操作）</button>
+  <button class="btn sub" id="btn-cpu-defense">🍗 CPU対戦（防御側を操作）</button>
+  <div class="rules">
+    ・攻撃側: 自分側のエリアをタップしてレモン汁を落とす<br>
+    ・防御側: お皿をドラッグしてからあげを守る<br>
+    ・果汁がからあげに命中 → 攻撃側に1点<br>
+    ・10秒間守り切る → 防御側に1点<br>
+    ・得点ごとに攻守交代、先に5点で勝ち！<br>
+    ・2人対戦はスマホを縦にしてテーブルに置き、向かい合って遊んでね
+  </div>
+</div>
+
+<!-- ゲームオーバー -->
+<div id="gameover-overlay" class="overlay hidden">
+  <div id="go-top" class="rot180">
+    <div class="winner-text" id="winner-top"></div>
+    <div class="score-text" id="score-top"></div>
+  </div>
+  <div>
+    <button class="btn" id="btn-retry">もう一度</button>
+    <button class="btn sub" id="btn-menu">モード選択へ</button>
+  </div>
+  <div id="go-bottom">
+    <div class="winner-text" id="winner-bottom"></div>
+    <div class="score-text" id="score-bottom"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+ * ゲームバランス調整用の定数（ここをいじれば調整できます）
+ * ============================================================ */
+const CONFIG = {
+  WIN_SCORE: 5,                // 勝利に必要な点数
+  DEFEND_TIME_MS: 10000,       // 防御側がこの時間守り切れば1点（ms）
+
+  // --- 攻撃側（レモン） ---
+  TAP_COOLDOWN_MS: 380,        // タップ連打のクールダウン（ms）小さいほど攻撃有利
+  DROP_SPEED_RATIO: 0.62,      // 水滴の落下速度（画面の高さ / 秒）大きいほど攻撃有利
+  DROP_RADIUS: 9,              // 水滴の半径（px）
+  DROP_SPAWN_MIN_Y: 0.08,      // 水滴を出せる最上部（画面高さ比）
+  DROP_SPAWN_MAX_Y: 0.46,      // 水滴を出せる最下部（画面高さ比、0.5=中央線）
+  MAX_DROPS: 14,               // 同時に存在できる水滴の最大数
+
+  // --- 防御側（お皿とからあげ） ---
+  PADDLE_WIDTH_RATIO: 0.26,    // お皿の幅（画面の幅に対する比率）大きいほど防御有利
+  PADDLE_HEIGHT: 20,           // お皿の当たり判定の厚み（px）
+  PADDLE_GAP: 46,              // からあげ列とお皿の間隔（px）
+  PADDLE_FOLLOW: 22,           // お皿が指に追従する速さ（大きいほど機敏）
+  KARAAGE_COUNT: 6,            // からあげの数（見た目用）
+  KARAAGE_ROW_RATIO: 0.085,    // からあげ列の高さ（画面高さ比）
+
+  // --- CPU ---
+  CPU_PADDLE_SPEED_RATIO: 1.05, // CPU防御のお皿速度（画面の幅 / 秒）大きいほどCPU防御が強い
+  CPU_REACTION_MS: 140,         // CPU防御の思考間隔（大きいほど鈍い）
+  CPU_AIM_ERROR: 0.35,          // CPU防御の狙いブレ（お皿幅に対する比率）
+  CPU_ATTACK_MIN_MS: 550,       // CPU攻撃の発射間隔 最小
+  CPU_ATTACK_MAX_MS: 1300,      // CPU攻撃の発射間隔 最大
+  CPU_ATTACK_LOW_PROB: 0.45,    // CPU攻撃が中央線ギリギリ（強い位置）から撃つ確率
+
+  // --- 演出 ---
+  INTRO_MS: 1800,              // ラウンド開始前の表示時間
+  RESOLVE_MS: 1600,            // 得点表示の時間
+  SIDECHANGE_MS: 1000,         // サイドチェンジ演出の時間
+};
+
+/* ============================================================ */
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const wrap = document.getElementById("game-wrap");
+const menuOverlay = document.getElementById("menu-overlay");
+const gameoverOverlay = document.getElementById("gameover-overlay");
+
+let W = 0, H = 0, DPR = 1;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  layoutRound();
+}
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", () => setTimeout(resize, 300));
+
+/* ---------------- ゲーム状態 ---------------- */
+// プレイヤー0 = 最初の攻撃側（2人対戦では画面上端側の人）/ CPU戦では人間
+// プレイヤー1 = 最初の防御側 / CPU戦ではCPU
+let state = "menu";       // menu | intro | playing | resolve | sidechange | gameover
+let mode = "pvp";          // pvp | human-attack | human-defense
+let scores = [0, 0];
+let attackerIdx = 0;       // いま攻撃しているプレイヤー
+let roundNum = 1;
+let stateUntil = 0;        // intro/resolve/sidechange の終了時刻
+let resolveMsg = "";
+let resolveIsGameover = false;
+
+let drops = [];            // {x, y}
+let particles = [];        // {x, y, vx, vy, life, color, r}
+let paddle = { x: 0, targetX: 0, w: 100 };
+let karaagePieces = [];    // {x, y, lumps:[{dx,dy,r}], wet}
+let karaageTopY = 0, paddleY = 0;
+let lastFireTime = -99999;
+let timeLeft = CONFIG.DEFEND_TIME_MS;
+let timeUp = false;
+let cpuNextFire = 0, cpuAimX = 0, cpuLastThink = 0;
+let defenseTouchId = null;
+let mouseDown = false;
+
+const HUMAN_IDX = 0;
+
+function isFlipped() { return mode === "pvp" && attackerIdx === 1; }
+function cpuIsAttacker() { return mode !== "pvp" && attackerIdx !== HUMAN_IDX; }
+function cpuIsDefender() { return mode !== "pvp" && attackerIdx === HUMAN_IDX; }
+
+function layoutRound() {
+  const rowH = H * CONFIG.KARAAGE_ROW_RATIO;
+  karaageTopY = H - rowH;
+  paddleY = karaageTopY - CONFIG.PADDLE_GAP;
+  paddle.w = W * CONFIG.PADDLE_WIDTH_RATIO;
+  buildKaraage();
+}
+
+function buildKaraage() {
+  karaagePieces = [];
+  const n = CONFIG.KARAAGE_COUNT;
+  const rowH = H * CONFIG.KARAAGE_ROW_RATIO;
+  for (let i = 0; i < n; i++) {
+    const cx = (W / n) * (i + 0.5);
+    const cy = karaageTopY + rowH * 0.55;
+    const base = Math.min(W / n, rowH) * 0.42;
+    const lumps = [];
+    const cnt = 4 + Math.floor(Math.random() * 3);
+    for (let j = 0; j < cnt; j++) {
+      lumps.push({
+        dx: (Math.random() - 0.5) * base * 1.1,
+        dy: (Math.random() - 0.5) * base * 0.8,
+        r: base * (0.5 + Math.random() * 0.5),
+      });
+    }
+    karaagePieces.push({ x: cx, y: cy, lumps, wet: 0 });
+  }
+}
+
+/* ---------------- サウンド（WebAudio 簡易ビープ） ---------------- */
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { /* 無音で続行 */ }
+  }
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+}
+function beep(freq, dur, type, vol, delay) {
+  if (!audioCtx) return;
+  try {
+    const t0 = audioCtx.currentTime + (delay || 0);
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = type || "square";
+    osc.frequency.value = freq;
+    g.gain.setValueAtTime(vol || 0.08, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    osc.connect(g); g.connect(audioCtx.destination);
+    osc.start(t0); osc.stop(t0 + dur);
+  } catch (e) { /* ignore */ }
+}
+const sndFire  = () => beep(880, 0.08, "square", 0.05);
+const sndBlock = () => { beep(420, 0.06, "triangle", 0.1); beep(620, 0.08, "triangle", 0.08, 0.05); };
+const sndHit   = () => { beep(300, 0.15, "sawtooth", 0.1); beep(200, 0.25, "sawtooth", 0.1, 0.1); };
+const sndPoint = () => { beep(660, 0.1, "square", 0.08); beep(880, 0.1, "square", 0.08, 0.1); beep(1100, 0.15, "square", 0.08, 0.2); };
+
+/* ---------------- 入力 ---------------- */
+function toGame(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  let x = clientX - r.left;
+  let y = clientY - r.top;
+  if (isFlipped()) { x = W - x; y = H - y; }
+  return { x, y };
+}
+
+function handleTapStart(gx, gy, touchId) {
+  if (state !== "playing") return;
+  if (gy < H * 0.5) {
+    // 攻撃ゾーン
+    if (cpuIsAttacker()) return; // 攻撃はCPU担当
+    tryFire(gx, gy);
+  } else {
+    // 防御ゾーン
+    if (cpuIsDefender()) return; // 防御はCPU担当
+    if (defenseTouchId === null || touchId === defenseTouchId) {
+      defenseTouchId = touchId;
+      paddle.targetX = gx;
+    }
+  }
+}
+
+function handleMove(gx, gy, touchId) {
+  if (state !== "playing") return;
+  if (cpuIsDefender()) return;
+  if (touchId === defenseTouchId && gy > H * 0.35) {
+    paddle.targetX = gx;
+  }
+}
+
+function handleEnd(touchId) {
+  if (touchId === defenseTouchId) defenseTouchId = null;
+}
+
+function tryFire(gx, gy) {
+  const now = performance.now();
+  if (timeUp) return;
+  if (now - lastFireTime < CONFIG.TAP_COOLDOWN_MS) return;
+  if (drops.length >= CONFIG.MAX_DROPS) return;
+  lastFireTime = now;
+  const y = Math.max(H * CONFIG.DROP_SPAWN_MIN_Y, Math.min(H * CONFIG.DROP_SPAWN_MAX_Y, gy));
+  drops.push({ x: Math.max(10, Math.min(W - 10, gx)), y });
+  spawnParticles(gx, y, "#fff26b", 6, 2);
+  sndFire();
+}
+
+canvas.addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  initAudio();
+  for (const t of e.changedTouches) {
+    const p = toGame(t.clientX, t.clientY);
+    handleTapStart(p.x, p.y, t.identifier);
+  }
+}, { passive: false });
+
+canvas.addEventListener("touchmove", (e) => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const p = toGame(t.clientX, t.clientY);
+    handleMove(p.x, p.y, t.identifier);
+  }
+}, { passive: false });
+
+canvas.addEventListener("touchend", (e) => {
+  e.preventDefault();
+  for (const t of e.changedTouches) handleEnd(t.identifier);
+}, { passive: false });
+canvas.addEventListener("touchcancel", (e) => {
+  for (const t of e.changedTouches) handleEnd(t.identifier);
+});
+
+// PC用マウス操作
+canvas.addEventListener("mousedown", (e) => {
+  initAudio();
+  mouseDown = true;
+  const p = toGame(e.clientX, e.clientY);
+  handleTapStart(p.x, p.y, "mouse");
+});
+canvas.addEventListener("mousemove", (e) => {
+  if (!mouseDown) return;
+  const p = toGame(e.clientX, e.clientY);
+  handleMove(p.x, p.y, "mouse");
+});
+window.addEventListener("mouseup", () => { mouseDown = false; handleEnd("mouse"); });
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+/* ---------------- ゲーム進行 ---------------- */
+function startGame(selectedMode) {
+  initAudio();
+  mode = selectedMode;
+  scores = [0, 0];
+  roundNum = 1;
+  attackerIdx = (mode === "human-defense") ? 1 : 0;
+  applyFlip(false); // メニューからは常に非反転で開始（pvpはプレイヤー0が攻撃から）
+  menuOverlay.classList.add("hidden");
+  gameoverOverlay.classList.add("hidden");
+  startRound();
+}
+
+function applyFlip(animate) {
+  if (!animate) wrap.style.transition = "none";
+  wrap.classList.toggle("flipped", isFlipped());
+  if (!animate) {
+    void wrap.offsetWidth; // reflow
+    wrap.style.transition = "";
+  }
+}
+
+function startRound() {
+  drops = [];
+  particles = [];
+  layoutRound();
+  paddle.x = paddle.targetX = W / 2;
+  timeLeft = CONFIG.DEFEND_TIME_MS;
+  timeUp = false;
+  lastFireTime = -99999;
+  defenseTouchId = null;
+  cpuNextFire = performance.now() + rand(CONFIG.CPU_ATTACK_MIN_MS, CONFIG.CPU_ATTACK_MAX_MS);
+  cpuAimX = W / 2;
+  state = "intro";
+  stateUntil = performance.now() + CONFIG.INTRO_MS;
+}
+
+function scorePoint(winnerIdx, msg) {
+  scores[winnerIdx]++;
+  sndPoint();
+  resolveIsGameover = scores[winnerIdx] >= CONFIG.WIN_SCORE;
+  resolveMsg = msg;
+  state = "resolve";
+  stateUntil = performance.now() + CONFIG.RESOLVE_MS;
+}
+
+function afterResolve() {
+  if (resolveIsGameover) {
+    showGameover();
+    return;
+  }
+  // サイドチェンジ
+  attackerIdx = 1 - attackerIdx;
+  roundNum++;
+  state = "sidechange";
+  stateUntil = performance.now() + CONFIG.SIDECHANGE_MS;
+  applyFlip(true);
+}
+
+function showGameover() {
+  state = "gameover";
+  const winnerIdx = scores[0] >= CONFIG.WIN_SCORE ? 0 : 1;
+  let winnerName;
+  if (mode === "pvp") {
+    winnerName = winnerIdx === 0 ? "プレイヤー1（先攻）の勝ち！" : "プレイヤー2（後攻）の勝ち！";
+  } else {
+    winnerName = winnerIdx === HUMAN_IDX ? "あなたの勝ち！ 🎉" : "CPUの勝ち…！ 😢";
+  }
+  const scoreLine = `${scores[0]} - ${scores[1]}`;
+  document.getElementById("winner-bottom").textContent = winnerName;
+  document.getElementById("score-bottom").textContent = scoreLine;
+  const topWrap = document.getElementById("go-top");
+  if (mode === "pvp") {
+    topWrap.style.display = "";
+    document.getElementById("winner-top").textContent = winnerName;
+    document.getElementById("score-top").textContent = `${scores[1]} - ${scores[0]}`;
+  } else {
+    topWrap.style.display = "none";
+  }
+  attackerIdx = 0;
+  applyFlip(false); // オーバーレイは非反転画面で
+  gameoverOverlay.classList.remove("hidden");
+}
+
+document.getElementById("btn-pvp").addEventListener("click", () => startGame("pvp"));
+document.getElementById("btn-cpu-attack").addEventListener("click", () => startGame("human-attack"));
+document.getElementById("btn-cpu-defense").addEventListener("click", () => startGame("human-defense"));
+document.getElementById("btn-retry").addEventListener("click", () => startGame(mode));
+document.getElementById("btn-menu").addEventListener("click", () => {
+  gameoverOverlay.classList.add("hidden");
+  menuOverlay.classList.remove("hidden");
+  state = "menu";
+});
+
+/* ---------------- 更新 ---------------- */
+function rand(a, b) { return a + Math.random() * (b - a); }
+
+function spawnParticles(x, y, color, count, speed) {
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = speed * (0.5 + Math.random());
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * s * 60,
+      vy: Math.sin(a) * s * 60 - 60,
+      life: 0.5 + Math.random() * 0.3,
+      color,
+      r: 2 + Math.random() * 3,
+    });
+  }
+}
+
+function updateCPU(now, dt) {
+  if (cpuIsAttacker()) {
+    // 攻撃CPU: 一定間隔でランダムな位置から発射
+    if (now >= cpuNextFire && !timeUp) {
+      const x = rand(W * 0.1, W * 0.9);
+      const aggressive = Math.random() < CONFIG.CPU_ATTACK_LOW_PROB;
+      const y = aggressive ? H * CONFIG.DROP_SPAWN_MAX_Y : rand(H * 0.15, H * 0.4);
+      if (drops.length < CONFIG.MAX_DROPS) {
+        drops.push({ x, y });
+        spawnParticles(x, y, "#fff26b", 6, 2);
+        sndFire();
+      }
+      cpuNextFire = now + rand(CONFIG.CPU_ATTACK_MIN_MS, CONFIG.CPU_ATTACK_MAX_MS);
+    }
+  }
+  if (cpuIsDefender()) {
+    // 防御CPU: 一番下（karaage に近い）の水滴を追う
+    if (now - cpuLastThink > CONFIG.CPU_REACTION_MS) {
+      cpuLastThink = now;
+      let target = null;
+      for (const d of drops) {
+        if (!target || d.y > target.y) target = d;
+      }
+      if (target) {
+        cpuAimX = target.x + rand(-1, 1) * paddle.w * CONFIG.CPU_AIM_ERROR;
+      } else {
+        cpuAimX = W / 2;
+      }
+    }
+    const maxMove = W * CONFIG.CPU_PADDLE_SPEED_RATIO * dt;
+    const diff = cpuAimX - paddle.x;
+    paddle.x += Math.max(-maxMove, Math.min(maxMove, diff));
+    paddle.x = Math.max(paddle.w / 2, Math.min(W - paddle.w / 2, paddle.x));
+    paddle.targetX = paddle.x;
+  }
+}
+
+function update(now, dt) {
+  // パーティクルは常に更新
+  for (const p of particles) {
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 500 * dt;
+    p.life -= dt;
+  }
+  particles = particles.filter((p) => p.life > 0);
+  for (const k of karaagePieces) { if (k.wet > 0) k.wet = Math.max(0, k.wet - dt * 0.3); }
+
+  if (state === "intro" || state === "resolve" || state === "sidechange") {
+    if (now >= stateUntil) {
+      if (state === "intro") { state = "playing"; }
+      else if (state === "resolve") { afterResolve(); }
+      else { startRound(); }
+    }
+    return;
+  }
+  if (state !== "playing") return;
+
+  timeLeft -= dt * 1000;
+  if (timeLeft <= 0) {
+    timeLeft = 0;
+    timeUp = true;
+  }
+
+  updateCPU(now, dt);
+
+  // 人間の防御パドル追従
+  if (!cpuIsDefender()) {
+    const t = Math.min(1, CONFIG.PADDLE_FOLLOW * dt);
+    paddle.x += (paddle.targetX - paddle.x) * t;
+    paddle.x = Math.max(paddle.w / 2, Math.min(W - paddle.w / 2, paddle.x));
+  }
+
+  // 水滴の移動と判定
+  const vy = H * CONFIG.DROP_SPEED_RATIO * dt;
+  const r = CONFIG.DROP_RADIUS;
+  let landed = false;
+  const kept = [];
+  for (const d of drops) {
+    const prevY = d.y;
+    d.y += vy;
+    // お皿でブロック
+    if (prevY - r < paddleY + CONFIG.PADDLE_HEIGHT && d.y + r >= paddleY &&
+        Math.abs(d.x - paddle.x) <= paddle.w / 2 + r * 0.6) {
+      spawnParticles(d.x, paddleY, "#fff26b", 10, 3);
+      sndBlock();
+      continue;
+    }
+    // からあげに到達
+    if (d.y + r >= karaageTopY) {
+      landed = true;
+      spawnParticles(d.x, karaageTopY, "#fff26b", 16, 4);
+      let nearest = null, best = Infinity;
+      for (const k of karaagePieces) {
+        const dist = Math.abs(k.x - d.x);
+        if (dist < best) { best = dist; nearest = k; }
+      }
+      if (nearest) nearest.wet = 1;
+      continue;
+    }
+    kept.push(d);
+  }
+  drops = kept;
+
+  if (landed) {
+    sndHit();
+    scorePoint(attackerIdx, "🍋 レモン命中！\n攻撃側に1点");
+    return;
+  }
+  if (timeUp && drops.length === 0) {
+    scorePoint(1 - attackerIdx, "🛡 守り切った！\n防御側に1点");
+  }
+}
+
+/* ---------------- 描画 ---------------- */
+function drawRotated(x, y, fn) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(Math.PI);
+  fn();
+  ctx.restore();
+}
+
+// 攻撃側UIをそのプレイヤー向きに回転して描くか（2人対戦時のみ回転）
+function attackTextRotated() { return mode === "pvp"; }
+
+function drawText(text, x, y, size, color, rotated, weight) {
+  ctx.save();
+  ctx.font = `${weight || 700} ${size}px -apple-system, "Hiragino Kaku Gothic ProN", sans-serif`;
+  ctx.fillStyle = color;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  if (rotated) {
+    ctx.translate(x, y);
+    ctx.rotate(Math.PI);
+    ctx.fillText(text, 0, 0);
+  } else {
+    ctx.fillText(text, x, y);
+  }
+  ctx.restore();
+}
+
+function drawMultiline(text, x, y, size, color, rotated, lineHeight) {
+  const lines = text.split("\n");
+  const lh = lineHeight || size * 1.3;
+  const startY = y - ((lines.length - 1) * lh) / 2;
+  lines.forEach((line, i) => {
+    const ly = startY + i * lh;
+    drawText(line, x, rotated ? (2 * y - ly) : ly, size, color, rotated);
+  });
+}
+
+function drawBackground() {
+  // 攻撃ゾーン: 明るい空色っぽいレモン畑イメージ
+  const gTop = ctx.createLinearGradient(0, 0, 0, H * 0.5);
+  gTop.addColorStop(0, "#fdf6d8");
+  gTop.addColorStop(1, "#f7e9a8");
+  ctx.fillStyle = gTop;
+  ctx.fillRect(0, 0, W, H * 0.5);
+  // 防御ゾーン: 食卓っぽい木目色
+  const gBot = ctx.createLinearGradient(0, H * 0.5, 0, H);
+  gBot.addColorStop(0, "#c98d4e");
+  gBot.addColorStop(1, "#9c6430");
+  ctx.fillStyle = gBot;
+  ctx.fillRect(0, H * 0.5, W, H * 0.5);
+  // 中央線
+  ctx.save();
+  ctx.strokeStyle = "rgba(90, 55, 20, 0.5)";
+  ctx.lineWidth = 3;
+  ctx.setLineDash([12, 10]);
+  ctx.beginPath();
+  ctx.moveTo(0, H * 0.5);
+  ctx.lineTo(W, H * 0.5);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawLemonIcon(x, y, r, rotated) {
+  ctx.save();
+  ctx.translate(x, y);
+  if (rotated) ctx.rotate(Math.PI);
+  const g = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.2, 0, 0, r * 1.3);
+  g.addColorStop(0, "#fff9a8");
+  g.addColorStop(1, "#f2ce1b");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, r * 1.25, r * 0.95, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // 両端のぽっち
+  ctx.fillStyle = "#e8c414";
+  ctx.beginPath(); ctx.ellipse(-r * 1.25, 0, r * 0.22, r * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(r * 1.25, 0, r * 0.22, r * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function drawDrop(d) {
+  const r = CONFIG.DROP_RADIUS;
+  ctx.save();
+  ctx.translate(d.x, d.y);
+  const g = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r * 1.2);
+  g.addColorStop(0, "#fffbc2");
+  g.addColorStop(1, "#f5d924");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(0, -r * 1.7);
+  ctx.quadraticCurveTo(r, -r * 0.5, r, 0.2 * r);
+  ctx.arc(0, 0.2 * r, r, 0, Math.PI);
+  ctx.quadraticCurveTo(-r, -r * 0.5, 0, -r * 1.7);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(200, 160, 0, 0.5)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawPaddle() {
+  ctx.save();
+  ctx.translate(paddle.x, paddleY + CONFIG.PADDLE_HEIGHT / 2);
+  // お皿（楕円）
+  ctx.fillStyle = "#f6f4ee";
+  ctx.strokeStyle = "#b9b4a5";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, paddle.w / 2, 15, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#e6e2d5";
+  ctx.beginPath();
+  ctx.ellipse(0, 0, paddle.w / 2 * 0.72, 9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawKaraage() {
+  const rowH = H * CONFIG.KARAAGE_ROW_RATIO;
+  // 大皿
+  ctx.fillStyle = "#efe9db";
+  ctx.beginPath();
+  ctx.ellipse(W / 2, H, W * 0.62, rowH * 1.05, 0, Math.PI, Math.PI * 2);
+  ctx.fill();
+  for (const k of karaagePieces) {
+    for (const l of k.lumps) {
+      const g = ctx.createRadialGradient(
+        k.x + l.dx - l.r * 0.3, k.y + l.dy - l.r * 0.3, l.r * 0.15,
+        k.x + l.dx, k.y + l.dy, l.r
+      );
+      if (k.wet > 0) {
+        g.addColorStop(0, "#e8d67a");
+        g.addColorStop(1, "#a3833a");
+      } else {
+        g.addColorStop(0, "#d99a4e");
+        g.addColorStop(1, "#8f5518");
+      }
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(k.x + l.dx, k.y + l.dy, l.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawHud(now) {
+  const rot = attackTextRotated();
+  const atkLabel = "🍋 こうげき";
+  const defLabel = "🍗 ぼうぎょ";
+
+  // 攻撃側（画面上端、pvpならそのプレイヤー向きに180度回転）
+  drawText(`${atkLabel}  ${scores[attackerIdx]}てん`, W / 2, 34, 20, "#7a5a00", rot);
+  // 防御側（画面下端側、防御プレイヤー向き＝正位置）
+  drawText(`${defLabel}  ${scores[1 - attackerIdx]}てん`, W / 2, H * 0.5 + 34, 20, "#fff3d6", false);
+
+  if (state === "playing" || state === "intro") {
+    // 残り時間（中央線の上下に両向きで表示）
+    const sec = Math.ceil(timeLeft / 1000);
+    const timerColor = sec <= 3 ? "#d43a2f" : "#5a3714";
+    drawText(`のこり ${sec}`, W / 2, H * 0.5 - 26, 22, timerColor, rot);
+    drawText(`のこり ${sec}`, W / 2, H * 0.5 + 70, 22, sec <= 3 ? "#ff8d7e" : "#ffe9bd", false);
+    // タイムバー
+    const ratio = timeLeft / CONFIG.DEFEND_TIME_MS;
+    ctx.fillStyle = "rgba(90, 55, 20, 0.25)";
+    ctx.fillRect(W * 0.1, H * 0.5 - 6, W * 0.8, 5);
+    ctx.fillStyle = sec <= 3 ? "#e0523f" : "#6cb043";
+    ctx.fillRect(W * 0.1, H * 0.5 - 6, W * 0.8 * ratio, 5);
+  }
+
+  // 攻撃側クールダウンインジケータ
+  if (state === "playing" && !cpuIsAttacker()) {
+    const cd = Math.min(1, (now - lastFireTime) / CONFIG.TAP_COOLDOWN_MS);
+    const cx = W / 2, cy = 78, cr = 14;
+    ctx.save();
+    ctx.strokeStyle = "rgba(122, 90, 0, 0.25)";
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(cx, cy, cr, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = cd >= 1 ? "#e8a512" : "#c9b060";
+    ctx.beginPath(); ctx.arc(cx, cy, cr, -Math.PI / 2, -Math.PI / 2 + cd * Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    drawLemonIcon(cx, cy, 7, rot);
+    if (timeUp) drawText("じかんぎれ！", W / 2, 116, 15, "#a06000", rot);
+  }
+
+  // 操作ヒント（ラウンド最初の数秒）
+  if (state === "playing" && timeLeft > CONFIG.DEFEND_TIME_MS - 2500) {
+    if (!cpuIsAttacker()) drawText("タップで果汁を落とせ！", W / 2, H * 0.3, 17, "rgba(122,90,0,0.65)", rot);
+    if (!cpuIsDefender()) drawText("お皿を動かしてからあげを守れ！", W / 2, H * 0.78, 17, "rgba(255,243,214,0.8)", false);
+  }
+}
+
+function drawBanner() {
+  ctx.fillStyle = "rgba(40, 22, 5, 0.55)";
+  ctx.fillRect(0, 0, W, H);
+  const rot = attackTextRotated();
+  let msg = "";
+  if (state === "intro") {
+    const remain = stateUntil - performance.now();
+    if (remain > CONFIG.INTRO_MS * 0.4) {
+      if (mode === "pvp") {
+        // 各プレイヤーの手元に自分のロールを表示
+        drawMultiline(`ラウンド ${roundNum}\nあなたは 🍗ぼうぎょ`, W / 2, H * 0.68, 26, "#ffe75c", false);
+        drawMultiline(`ラウンド ${roundNum}\nあなたは 🍋こうげき`, W / 2, H * 0.32, 26, "#ffe75c", true);
+        return;
+      }
+      const role = attackerIdx === HUMAN_IDX ? "あなたは 🍋こうげき" : "あなたは 🍗ぼうぎょ";
+      msg = `ラウンド ${roundNum}\n${role}`;
+    } else {
+      msg = "スタート！";
+    }
+  } else if (state === "resolve") {
+    msg = resolveMsg;
+  } else if (state === "sidechange") {
+    msg = "サイドチェンジ！\n攻守交代";
+  }
+  // 下側プレイヤー向き
+  drawMultiline(msg, W / 2, H * 0.68, 26, "#ffe75c", false);
+  // 上側プレイヤー向き（pvp時のみ）
+  if (rot) drawMultiline(msg, W / 2, H * 0.32, 26, "#ffe75c", true);
+}
+
+function draw(now) {
+  ctx.clearRect(0, 0, W, H);
+  if (state === "menu" || state === "gameover") {
+    drawBackground();
+    drawKaraage();
+    return;
+  }
+  drawBackground();
+  drawKaraage();
+  drawPaddle();
+  for (const d of drops) drawDrop(d);
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 2));
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  drawHud(now);
+  if (state === "intro" || state === "resolve" || state === "sidechange") drawBanner();
+}
+
+/* ---------------- メインループ ---------------- */
+let lastTime = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+  update(now, dt);
+  draw(now);
+  requestAnimationFrame(loop);
+}
+
+resize();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
